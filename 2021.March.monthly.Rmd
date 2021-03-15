@@ -1,0 +1,1292 @@
+---
+title: "2021.March"
+author: "Alene Onion"
+date: "3/9/2021"
+output: html_document
+---
+
+```{r GlobalOptions}
+options(knitr.duplicate.label = 'allow')
+```
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+#  {.tabset}
+
+The goal of this recent iteration of our trend analysis is to assess the drivers of Chlorophyll A change using Kendall Tau slopes as well as Spearman Rank Coefficients in order to identify paramters to conduct AIC model confirmation.
+
+## Parameters/Lakes
+
+These parameter/lake combinations have at least three years of data in the first 10 years of the data record (1986-1996) and the most recent 10 years of the data record (2010-2020).
+
+The following is a map of the locations and a list of parameters that meet these criteria for each lake.
+
+NOTE: summer TP and ChlA is the summer average calculated according to SOP 203: the average of the index period (July 15-Sept 15) is averaged with the average of samples collected in the summer (June-Sept) outside this index period.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(tidyverse)
+library(ggpubr)
+library(ggplot2)
+
+
+rm(list=setdiff(ls(), c("data")))
+
+temp<-data %>% 
+  filter(!is.na(SAMPLE_DATE),
+         SAMPLE_DATE!='1899-12-31',
+         !Characteristic.Name %in% c("DEPTH","DEPTH, BOTTOM","TEMPERATURE, AIR","QA","QB","QC","QD")) %>% 
+  mutate(Result.Sample.Fraction=ifelse(Result.Sample.Fraction=="TRUE","T",Result.Sample.Fraction)) %>%   
+  mutate(combined=paste(Characteristic.Name,INFO_TYPE,Result.Sample.Fraction,sep = "_"))  %>% 
+  select(LAKE_ID,SAMPLE_DATE,combined,Result.Value,LAB_QUALIFIERS) %>% 
+  mutate(Result.Value=ifelse(!is.na(LAB_QUALIFIERS)&(LAB_QUALIFIERS=="U"|LAB_QUALIFIERS=="UE"),"0",Result.Value),
+         Result.Value=trimws(Result.Value),
+         Result.Value=as.numeric(Result.Value),
+         #remove negative values
+         Result.Value>=0) %>% 
+  filter(!is.na(Result.Value)) %>%  
+  select(LAKE_ID,SAMPLE_DATE,combined,Result.Value) %>% 
+  distinct(LAKE_ID,SAMPLE_DATE,combined,.keep_all = TRUE) %>% 
+  mutate(year = format(SAMPLE_DATE, "%Y"),
+         year = as.numeric(year),
+         month=substr(SAMPLE_DATE,6,7)) %>% 
+  distinct()
+#removes rows where even one value is NA
+temp<-temp[rowSums(is.na(temp))==0,]
+#restricts to summer months
+temp<-temp %>% 
+  filter(month %in% c('06','07','08','09')) %>% 
+  mutate(combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_OW_NA",'DEPTH, SECCHI DISK DEPTH_SD_NA',combined)) %>% 
+  mutate(day=substr(SAMPLE_DATE,9,10),
+         day=as.numeric(day),
+         month=as.numeric(month),
+         index=ifelse(month==8,"index",NA),
+         index=ifelse(month==7&day>14,"index",index),
+         index=ifelse(month==9&day<16,"index",index),
+         index=ifelse(is.na(index),"not_index",index)) 
+#remove those that don't have both an observation within and outside the index period
+temp1<-temp %>%
+  group_by(LAKE_ID,combined,year,index) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  spread(index,Result.Value)
+temp1<-temp1[rowSums(is.na(temp1))==0,]
+temp1<-temp1 %>% select(LAKE_ID,combined,year) %>% distinct()
+temp<-merge(temp1,temp,by=c('LAKE_ID','combined','year'),all.x = TRUE)
+
+#Now average monthly values
+temp<-temp %>% 
+  group_by(LAKE_ID,combined,year,month) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() 
+
+#now filter to lakes/parameter combination that have three years in the first decade
+temp1<-temp %>% 
+  filter(year<1996) %>% 
+  select(LAKE_ID,combined,year) %>% distinct() %>% 
+  group_by(LAKE_ID,combined) %>%   summarize(n=n()) %>%   ungroup() %>% 
+  filter(n>2) %>%  select(LAKE_ID,combined) %>% distinct()
+temp<-merge(temp1,temp,by=c('LAKE_ID','combined'),all.x = TRUE)
+
+#now filter to lakes/parameter combinations that have three years in the most recent decade
+temp1<-temp %>% 
+  filter(year>2010) %>% 
+  select(LAKE_ID,combined,year) %>% distinct() %>% 
+  group_by(LAKE_ID,combined) %>%   summarize(n=n()) %>%   ungroup() %>% 
+  filter(n>2) %>%  select(LAKE_ID,combined) %>% distinct()
+temp<-merge(temp1,temp,by=c('LAKE_ID','combined'),all.x = TRUE)
+
+#Remove bottom samples since there are so few available
+temp<-temp %>% 
+  filter(!combined %in% c('TEMPERATURE, WATER_BS_NA','PHOSPHORUS_BS_T'))
+
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+sites<-temp %>% mutate(LOCATION_ID=paste(LAKE_ID,"C",sep="_")) %>% select(LAKE_ID,LOCATION_ID) %>% distinct()
+coordinates<-data %>% select(LOCATION_ID,X_Coordinate,Y_Coordinate) %>% distinct()
+sites<-merge(sites,coordinates,by=c('LOCATION_ID'),all.x = TRUE)
+rm(list=setdiff(ls(), c("data",'temp','sites')))
+
+library(ggmap)
+library(ggrepel)
+
+nybox<-make_bbox(sites,lon=X_Coordinate,lat=Y_Coordinate)
+
+print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+
+  geom_point(data=sites,aes(x=X_Coordinate,y=Y_Coordinate,label=LAKE_ID),size=4))
+
+
+junk<-temp %>% 
+  select(LAKE_ID,combined) %>% 
+  distinct() %>% 
+  mutate(n="x") %>% 
+  spread(combined,n,fill="") 
+DT::datatable(junk, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+rm(list=setdiff(ls(), c("data",'temp')))
+
+```
+
+## Seasonal KT
+
+WARNING!!!! We suspect the trend in NO3/NO2 is actually a change in the
+method detection limit
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#calculate seasonal kt
+params<-unique(temp$combined)
+nparams<-length(params)
+
+#create slopes table
+slopes<-data.frame(LAKE_ID=c("junk1","junk2"),slope=c(0,1),combined=c("junk","junk"))
+slopes<-slopes %>% 
+  mutate(LAKE_ID=as.character(LAKE_ID),
+         combined=as.character(combined))
+
+library(EnvStats)
+
+for(i in 1:nparams){
+  temp1<-temp %>% filter(combined==params[i]) %>% distinct()
+
+  lakes<-unique(temp1$LAKE_ID)
+  nlakes<-length(lakes)
+  
+  for(j in 1:nlakes){
+    temp2<-temp1 %>% 
+      filter(LAKE_ID==lakes[j]) %>% 
+      select(year,month,Result.Value) %>% 
+      distinct() 
+    temp3<-kendallSeasonalTrendTest(Result.Value~month+year,data=temp2)
+    tau<-as.data.frame(t(temp3$estimate))
+    tau$LAKE_ID<-lakes[j]
+    tau$combined<-params[i]
+    tau$pvalue<-temp3$p.value[2]
+    tau<-tau %>% 
+      mutate(slope=ifelse(pvalue>0.1,0,slope)) %>% 
+      select(LAKE_ID,slope,combined) %>% 
+      distinct()
+    slopes<-merge(slopes,tau,all=TRUE)
+    rm(list=setdiff(ls(), c("data",'slopes','temp','temp','temp1','lakes','nlakes','params',
+                            'nparams','i','j')))
+  }
+  
+}
+rm(list=setdiff(ls(), c("data",'slopes','temp')))
+
+slopes<-slopes %>% 
+  filter(combined!="junk")
+sloped<-slopes %>% 
+  spread(combined,slope,fill=NA)
+
+#DT::datatable(sloped, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+rm(list=setdiff(ls(), c("data",'slopes','temp')))
+```
+
+Plot of all the seasonal KT values
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(ggplot2)
+slopesh<-slopes %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="AcidPrecipITY, HYDROGEN ION (H+)_OW_NA","AcidPrecipity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  mutate(pcolor=NA,
+         pcolor=ifelse(slope>0,"positive",pcolor),
+         pcolor=ifelse(slope<0,"negative",pcolor),
+         pcolor=ifelse(slope==0,"no slope",pcolor)) 
+  
+barslope<-slopesh %>% 
+  mutate(slope=ifelse(slope>0,"positive",slope),
+         slope=ifelse(slope<0,"negative",slope),
+         slope=ifelse(slope==0,"no slope",slope)) %>% 
+  group_by(combined,slope) %>% 
+  summarize(n=n()) %>% 
+  ungroup() %>% 
+  arrange(combined,slope)
+
+cat("  \n")
+  cat("  \n")
+  
+print(ggplot(barslope, aes(x = combined, y = n, fill=slope)) +
+        geom_bar(stat="identity")+
+        labs(title="Number of Positive, Negative, and No Slope slope for Each Parameter",y="Number of Lakes",x="Parameter",colour = ""))
+cat("  \n")
+  cat("  \n")
+```
+
+Heat map
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+slopesh2<-slopesh %>% 
+  select(-pcolor) %>% 
+  spread(combined,slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,Secchi)) %>% 
+  gather(combined,slope,-LAKE_ID) %>% 
+  group_by(combined) %>% 
+  mutate(slope=scale(slope)) %>% 
+  ungroup()
+
+print(ggplot(slopesh2,aes(combined,LAKE_ID))+
+        geom_tile(aes(fill=slope))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("KT Trend") + 
+      ylab("Lakes ranked by Secchi slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="KT Trend"))
+```
+
+## Plots by lake
+
+The color of the point is determined by the month it was sampled in as
+indicated by the legend to the right of each plot. The Kendall Tau slope
+of the data is given next to the parameter name. Any slope that was not
+significant (p\>0.1) was converted to 0.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+
+#add slope to param name
+temp0<-merge(temp,slopes,by=c('LAKE_ID','combined'),all = TRUE)
+temp0<-temp0 %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined),
+         slope=ifelse(combined=="P",slope*100,slope),
+         slope=round(slope,2),
+         combined=paste(combined,slope,by=""))
+  
+
+library(gridExtra)
+library(ggplot2)
+
+lakes<-unique(temp$LAKE_ID)
+nlakes<-length(lakes)
+
+
+for(i in 1:nlakes){
+  temp1<-temp0 %>% filter(LAKE_ID==lakes[i]) %>% distinct()
+  
+  cat(' \n\n ')
+  print(lakes[i])
+  cat(' \n\n ')
+  
+    print(ggplot(data=temp1,aes(year,Result.Value))+
+               geom_point(aes(colour=factor(month)))+
+               geom_smooth()+
+            labs(y="units vary by parameter",x = "year") +
+            facet_wrap(~combined,scales = "free_y"))
+}
+
+
+rm(list=setdiff(ls(), c("data",'slopes','temp','temp80','temp10')))
+
+```
+
+## Correlations ChlA
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) 
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='ChlA'){
+    temp3<-temp2 %>% filter(combined %in% c('ChlA',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$ChlA,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="CHLOROPHYLL A_OW_T") %>% 
+  mutate(combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(ChlA=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$ChlA,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$ChlA,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in ChlA
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Secchi p values
+chlslope<-slopesh %>% filter(combined=="ChlA") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='0602PET0078',size=2)+
+        geom_hline(yintercept='0602CRO0073',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with ChlA") + 
+      ylab("Lakes ranked by ChlA slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+## Correlations Color
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have Color
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(Color)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='Color'){
+    temp3<-temp2 %>% filter(combined %in% c('Color',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$Color,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="TRUE COLOR_OW_T") %>% 
+  mutate(combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(Color=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Color,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Color,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in Color
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Secchi p values
+chlslope<-slopesh %>% filter(combined=="Color") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='0602BRA0154',size=2)+
+        geom_hline(yintercept='0601BEA0174',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with Color") + 
+      ylab("Lakes ranked by Color slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+## Correlations P
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have P
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(P)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='P'){
+    temp3<-temp2 %>% filter(combined %in% c('P',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$P,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="PHOSPHORUS_OW_T") %>% 
+  mutate(combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(P=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$P,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$P,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in P
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Secchi p values
+chlslope<-slopesh %>% filter(combined=="P") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='0602EAT0163',size=2)+
+        geom_hline(yintercept='1102BAB1109',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with P") + 
+      ylab("Lakes ranked by P slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+## Correlations PH
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have PH
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(PH)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='PH'){
+    temp3<-temp2 %>% filter(combined %in% c('PH',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$PH,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="PH_OW_NA") %>% 
+  mutate(combined=ifelse(combined=="PH_OW_NA","PH",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(PH=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$PH,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$PH,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in PH
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Secchi p values
+chlslope<-slopesh %>% filter(combined=="PH") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='0201CUB0115',size=2)+
+        geom_hline(yintercept='0703PAN0094',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with PH") + 
+      ylab("Lakes ranked by PH slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+## Correlations Secchi
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have Secchi
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(Secchi)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='Secchi'){
+    temp3<-temp2 %>% filter(combined %in% c('Secchi',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$Secchi,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA") %>% 
+  mutate(combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(Secchi=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Secchi,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Secchi,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in Secchi
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Secchi p values
+chlslope<-slopesh %>% filter(combined=="Secchi") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='0906BLA0001',size=2)+
+        geom_hline(yintercept='0303LOR0009',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with Secchi") + 
+      ylab("Lakes ranked by Secchi slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+## Correlations SpCond
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have SpCond
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(SpCond)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='SpCond'){
+    temp3<-temp2 %>% filter(combined %in% c('SpCond',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$SpCond,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="SPECIFIC CONDUCTANCE_OW_NA") %>% 
+  mutate(combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(SpCond=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$SpCond,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$SpCond,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in SpCond
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and SpCond p values
+chlslope<-slopesh %>% filter(combined=="SpCond") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='1102BAB1109',size=2)+
+        geom_hline(yintercept='1004PLA0254',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with SpCond") + 
+      ylab("Lakes ranked by SpCond slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+## Correlations Temp
+
+Correlations with parameters we measured
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp1<-temp %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  #remove those that don't have Temp
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(Temp)) %>% 
+  gather(combined,Result.Value,-LAKE_ID,-year,-month)
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+correlations<-data.frame(LAKE_ID="junk",param='junk',pvalue=0,direction=0)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+  params<-unique(temp2$combined)
+  nparams<-length(params)
+  for(j in 1:nparams){
+    if(params[j]!='Temp'){
+    temp3<-temp2 %>% filter(combined %in% c('Temp',params[j])) %>% spread(combined,Result.Value) %>% rename(param=params[j])
+    if(sum(temp3$param,na.rm=TRUE)>0){
+      p<-cor.test(temp3$Temp,temp3$param, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param=params[j],pvalue=p$p.value,direction=p$estimate)
+    }
+    rm(temp3)
+    }
+  }
+  rm(temp2)
+}
+
+correlations<-correlations %>% 
+  filter(param!='junk') 
+
+```
+
+Correlations with parameters we didn't measure
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#now average values for a seasonal mean
+temp1<-temp %>% 
+  filter(combined=="TEMPERATURE, WATER_OW_NA") %>% 
+  mutate(combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  select(LAKE_ID,year,Result.Value) %>% 
+  group_by(LAKE_ID,year) %>% 
+  summarize(Result.Value=mean(Result.Value)) %>% 
+  ungroup() %>% 
+  rename(Temp=Result.Value)
+
+#add AcidPrecip rain
+AcidPrecip<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+AcidPrecip<-AcidPrecip %>% 
+  gather(LAKE_ID,AcidPrecip,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+temp1<-merge(temp1,AcidPrecip,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(AcidPrecip)
+
+#add precipitation
+library(readxl)
+#read in table types
+precipitation<-"C:/Users/alanc/New York State Office of Information Technology Services/LMAS - General/4 decade trend analysis/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+precipitation<-read_excel(precipitation, sheet ="TRANSPOSED")
+precipitation<-precipitation %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR)
+temp1<-merge(temp1,precipitation,by=c('LAKE_ID','year'),all.x=TRUE)
+rm(precipitation)
+
+#Now assess correlations
+#pull unique parameters
+lakes<-unique(temp1$LAKE_ID)
+nlakes<-length(lakes)
+
+for(i in 1:nlakes){
+  temp2<-temp1 %>% filter(LAKE_ID==lakes[i])
+    if(sum(temp2$AcidPrecip,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Temp,temp2$AcidPrecip, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="AcidPrecip",pvalue=p$p.value,direction=p$estimate)
+    }
+    if(sum(temp2$precipitation,na.rm=TRUE)>0){
+      p<-cor.test(temp2$Temp,temp2$precipitation, method="spearman")
+      correlations<-correlations %>% add_row(LAKE_ID=lakes[i],param="precipitation",pvalue=p$p.value,direction=p$estimate)
+    }
+  rm(temp2)
+}
+```
+
+
+Table of correlation results. Black outlined boxes are statistically significant (p<0.05) and color indicates magnitude.
+Lakes below the black line have significant negative trends in Temp
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(scales) #for muted function
+
+#reorder correlation based on P and Temp p values
+chlslope<-slopesh %>% filter(combined=="Temp") %>% select(LAKE_ID,slope) %>% distinct()
+correlations2<-merge(correlations,chlslope,by=c('LAKE_ID'),all=TRUE)
+correlations2<-correlations2 %>% rename(chlslope=slope) %>% 
+  #arrange lakes by their KT slope
+  mutate(LAKE_ID=as.factor(LAKE_ID),
+         LAKE_ID=fct_reorder(LAKE_ID,chlslope)) %>% 
+  mutate(pvalue=ifelse(pvalue<0.05,"sig","nosig"))
+
+print(ggplot(correlations2,aes(param,LAKE_ID))+
+        geom_tile(aes(fill=direction,color=pvalue))+
+        #geom_text(aes(fill= direction,label=round(direction,2)))+
+        scale_fill_gradient2(low = muted("darkred"), 
+                       mid = "white", 
+                       high = muted("midnightblue"), 
+                       midpoint = 0)+
+        geom_hline(yintercept='1401ANA0251',size=2)+
+        geom_hline(yintercept='0602LEB0153',size=2)+
+        scale_color_manual(values=c(NA,'black'))+
+        guides(color=FALSE)+
+        theme(panel.grid.major.x=element_blank(), #no gridlines
+          panel.grid.minor.x=element_blank(), 
+          panel.grid.major.y=element_blank(), 
+          panel.grid.minor.y=element_blank(),
+          panel.background=element_rect(fill="white"), # background=white
+          axis.text.x = element_text(angle=90, hjust = 1,vjust=1,size = 12,face = "bold"),
+          plot.title = element_text(size=20,face="bold"),
+          axis.text.y = element_blank(),
+          axis.ticks.y=element_blank()) + 
+      ggtitle("Correlations of each Parameter with Temp") + 
+      ylab("Lakes ranked by Temp slope")+
+      theme(legend.title=element_text(face="bold", size=14)) + 
+      scale_x_discrete(name="") +
+      #scale_y_discrete(name="") +
+      labs(fill="Corr. Coef."))
+```
+
+

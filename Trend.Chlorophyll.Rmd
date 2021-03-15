@@ -1,0 +1,107 @@
+---
+title: "Trend in Chlorophyll"
+author: "Alene Onion"
+date: "Feb, 2020"
+output:  
+  html_document:
+    toc: true
+    toc_depth: 6
+    toc_float: true
+---
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+## All Temp Plots
+
+These lakes have at least one data point in each of the past 4 decades.
+With the naked eye, you can see that the majority of these waterbodies have declining slopes.
+
+It's also important to note that very few oligotrophic lakes are included in this data set. I believe this is because the focus of the program in the 80s and 90s was to address water quality problems. This was the similar focus nationally via the Clean Water Act. Unfortunately, this means it's difficult to track trends in NYS oligotrophic waters. We have modified our sampling strategy to better capture a balance of conditions moving forward.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp<-data
+#load packages
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(gridExtra)
+library(RColorBrewer)
+library(lubridate)
+#set date as date
+temp$SAMPLE_DATE<-as.Date(temp$SAMPLE_DATE,"%m/%d/%Y")
+
+#pull temp samples
+temp<-temp %>% 
+  filter(Characteristic.Name %in% c('CHLOROPHYLL A')) %>% 
+  select(WATER,LAKE_ID,SAMPLE_DATE,Characteristic.Name,Result.Value,Result.Unit,INFO_TYPE,DATA_PROVIDER) %>% 
+  distinct(temp)
+
+#pull year
+temp<-temp %>% 
+  mutate(year = format(SAMPLE_DATE, "%Y")) %>%
+  mutate(year = as.numeric(year)) %>% 
+  mutate(decade = year - year %% 10)
+temp<-distinct(temp)
+temp$Result.Value<-as.numeric(temp$Result.Value)
+
+#pull waterbodies with at least one sample in each decade
+decade<-unique(temp[c('LAKE_ID','decade')])
+decade<-decade %>% 
+  group_by(LAKE_ID) %>% 
+  summarize(n()) %>% 
+  ungroup()
+decade$decades<-decade$`n()`
+decade$`n()`<-NULL
+decade<-decade[decade$decades>3,]
+temp<-merge(decade,temp,by=c('LAKE_ID'),all.x = TRUE)
+rm(decade)
+temp$decade<-NULL
+temp$decades<-NULL
+
+####################################################################################
+#subset to just the routine sites
+slopes<-read.csv("trend.sites.slopes.provider.csv")
+temp<-merge(temp,slopes,all.x = TRUE)
+temp<- temp %>% 
+#Routine
+#    filter(LAKE_ID %in% c('1004PLA0254','1102BAB1109','1310QUE0057','0801SEC0782B','1104SCH0374','0906BON0024','1302WAC0117','1005GLE0441','1404OQU0383','0201CUB0115','0602MOR0152','0602MEL0039','1401ANA0251','0202CHA0122','0202FIN0153','1402WOL0037','1501LUC0982B','1301ORA0340','1402GUY0014','1004AUG0213','0906BUT0054','0705DUC0222','0302SOD0096','1311DUA0276A','1201GAL0563','1701LFR0662','1701CAN0889')) %>% 
+#Index
+#  filter(LAKE_ID %in% c('1004PLA0254','1102BAB1109','1101BAL1090','0202CHA0122','0201CUB0115','1311DUA0276A','1104EAG0438','1005GLE0441','0104JAV0152','1401ANA0251','0906BON0024','0602MOR0152','0602PET0078','1302WAC0117','1701LFR0662','1701LLO0708','0404LOO0079','0602MEL0039','0906MIL0055','1004MIR0250','1404OQU0383','1310QUE0057','1104SCH0374','0502SMI0066')) %>% 
+#CSLAP
+#  filter(DATA_PROVIDER %in% c('CSL')) %>% 
+  arrange(TSI.slope,LAKE_ID,SAMPLE_DATE)
+
+    temp$lake<-paste(temp$WATER," (",temp$LAKE_ID,")",sep="")
+    temp$day<-yday(temp$SAMPLE_DATE)
+    params<-unique(temp$lake)
+    nparams<-length(params)
+    #p<-list()
+
+    for(j in 1:nparams){
+      display<-paste("  \n","###",params[j],"  \n",sep="")
+      cat(display)
+      rm(display)
+      
+      temp1<-temp[temp$lake==params[j],]
+      temp1<-temp1[!is.na(temp1$Characteristic.Name),]
+      library(dplyr)
+
+      if((length(temp1$Result.Value))!=0){
+        yaxistitle<-unique(temp1$Result.Unit)
+          print(p<- ggplot(temp1, aes(x = day, y = Result.Value,color = year)) +
+                  theme_minimal()+
+                  geom_point(size=2,stroke=2)+
+                  labs(y=yaxistitle,x="Day of Year",colour = ""))
+      }
+      rm(list=c('temp1','testinfo','yaxistitle'))
+      cat("\n\n")
+    }
+    
+    cat("  \n")
+    cat("  \n")
+  rm(list=c('temp','j','params','nparams','p','display'))
+
+
+```
