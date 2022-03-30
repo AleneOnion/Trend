@@ -1,0 +1,1765 @@
+---
+title: "Combined Analysis of ChlA"
+author: "Alene Onion"
+date: "Dec, 2020"
+output:  
+  html_document
+editor_options: 
+  markdown: 
+    wrap: 72
+---
+
+```{r GlobalOptions}
+options(knitr.duplicate.label = 'allow')
+```
+
+```{r setup, include=FALSE, message=FALSE, warning=FALSE}
+knitr::opts_chunk$set(echo = FALSE)
+```
+
+#  {.tabset}
+
+The LMAS section has begun the process of analyzing our historic long
+term trend data. We pulled data from lakes that had at least two data
+points in the 1980s and 2010s. This provided a data set of 43 lakes to
+examine long term trends (see Parameters/Lakes tab). The raw data are
+plotted for simple visualization (see Plots by Lake and Plots by
+Parameter tabs).
+
+For most lakes, water temperatures are rising, color is increasing,
+nitrate is decreasing, and chlorophyll a is decreasing. You can see
+these trends in the seasonal Kendall Tau analysis, a valuable analysis
+for examining linear trends (see Seasonal KT tab).
+
+We observed that the data displayed non-linear trends as well.
+Specifically, we examined the simultaneous impacts of eutrophication and
+brownification as per Leech et al 2018. In general, most of the long
+term trend lakes have been impacted by both brownification (increasing
+color) and eutrophication (increasing phosphorus). There's a surprising
+switchback, however, observed in most lakes around roughly the year 2009
+where suddenly the trends reverse and phosphorus and color decrease (see
+Switchback tab). This switchback is observed in 26 out of the 43 lakes.
+Another 7 lakes have a switchback in color but not at the same time as
+the change in phosphorus if at all. Only three lakes truly did not have
+any such switchback and the remaining 7 did not have enough data across
+the decades to show this trend.
+
+Our initial hypothesis was that the switchback was driven by zebra
+mussel invasions. Lakes with zebra mussel invasions, however, don't
+always show this switchback and we also observed the switchback in lakes
+without a known zebra mussel invasion. Therefore, the switchback is
+likely influenced by another driver. Our only brainstorm at this point
+is possible impacts of hurricanes irene/lee and the tributary management
+that followed.
+
+Finally, we used a regression analysis to explore predictors of the
+chlorophyll a values. Not surprisingly, we found that the most important
+predictors of chloropyll a were different between data collected in the
+1980s and 2010s (see Comparison of Regressions tab).
+
+Phosphorus and secchi were the most important predictors of Chlorophyll
+A in both the 1980s and 2010s. That being said, they were less important
+in the 2010s compared to the 1980s (see Comparison of Regressions tab).
+We can see this change in importance in the raw data plot of phosphorus
+versus chlorophyll and the log transformed plot of log_chla versus
+log_phosphorus (see Plotting ChlA and Predictors Raw Data tab). Although
+the slope of the line is similar, it is shifted by roughly 0.8
+chlorophyll a. This is significant because many water quality standards
+are developed by plotting the linear relationship between a predictor
+and response variable to delineate a threshold concentration at which
+point the response variable is unacceptable (Heiskary and Wilson, 2008;
+NYSDEC fact sheets for ponded waters 2020 and 1993). A water quality
+standard developed on 1980s data would be set to a chlorophyll A value
+roughly 0.8mg/L higher than if data from the 2010s were used. This
+demonstrates what should have been obvious which is that we need to
+update our water quality standards more frequently than once every
+thirty years.
+
+Future studies: - examine the regression relationship with
+phosphorus/chlorophyll ratio rather than simply chlorophyll
+
+## Parameters/Lakes
+
+These parameter/lake combinations have at least two data points in the
+1980s and 2010s. The following is a map of the locations and a list of
+parameters that meet these criteria for each lake.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(lubridate)
+library(tidyverse)
+library(xts)
+
+ # setwd("C:/Users/amonion/New York State Office of Information Technology Services/BWAM - Lakes Database/Current")
+ # source("old_database/Reading.LMAS.Data.R")
+ # setwd("C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend")
+
+ # setwd("C:/Users/leneo/Dropbox/Alene/Rscripts/Current")
+ # source("old_database/Reading.LMAS.Data.R")
+  # setwd("C:/Users/leneo/Dropbox/Alene/Rscripts/Trend/Trend")
+
+
+rm(list=setdiff(ls(), c("data")))
+
+temp<-data %>% 
+  filter(!is.na(SAMPLE_DATE),
+         SAMPLE_DATE!='1899-12-31',
+         !Characteristic.Name %in% c("DEPTH","DEPTH, BOTTOM","TEMPERATURE, AIR","PH")) %>% 
+  mutate(combined=paste(Characteristic.Name,INFO_TYPE,Result.Sample.Fraction,sep = "_"))  %>% 
+  select(LAKE_ID,SAMPLE_DATE,combined,Result.Value,LAB_QUALIFIERS) %>% 
+  mutate(Result.Value=ifelse(!is.na(LAB_QUALIFIERS)&(LAB_QUALIFIERS=="U"|LAB_QUALIFIERS=="UE"),"0",Result.Value),
+         Result.Value=trimws(Result.Value),
+         Result.Value=as.numeric(Result.Value),
+         #remove negative values
+         Result.Value>=0) %>% 
+  filter(!is.na(Result.Value)) %>%  
+  select(LAKE_ID,SAMPLE_DATE,combined,Result.Value) %>% 
+  distinct(LAKE_ID,SAMPLE_DATE,combined,.keep_all = TRUE) %>% 
+  mutate(year = format(SAMPLE_DATE, "%Y"),
+         year = as.numeric(year),
+         decade = year - year %% 10,
+         dyear=decimal_date(SAMPLE_DATE),
+         month=substr(SAMPLE_DATE,6,7),
+         year=as.integer(dyear)) %>% 
+  distinct()
+#removes rows where even one value is NA
+temp<-temp[rowSums(is.na(temp))==0,]
+
+# #convert NOX values below 10ug/L to 0 since that's the max MDL through time
+# #10ug/L -> 0.01 mg/L
+# junk<-data %>% 
+#   filter(Characteristic.Name=="NITROGEN, NITRATE-NITRITE",INFO_TYPE=="OW",Result.Sample.Fraction=="T",DATA_PROVIDER=="CSL") %>% filter(Result.Value<0.01,Result.Value>0) %>% select(LAKE_ID,WATER,SAMPLE_DATE,Result.Value) %>% distinct()
+
+#create new parameter N:P ratio
+NPratio<-temp %>%   
+  filter(combined %in% c('PHOSPHORUS_OW_T','NITROGEN, NITRATE-NITRITE_OW_T')) %>% 
+  select(LAKE_ID,SAMPLE_DATE,year,decade,dyear,month,combined,Result.Value) %>% distinct() %>% 
+  spread(combined,Result.Value) %>% 
+  filter(!is.na(PHOSPHORUS_OW_T),!is.na(`NITROGEN, NITRATE-NITRITE_OW_T`)) %>% 
+  mutate(N_P=`NITROGEN, NITRATE-NITRITE_OW_T`/PHOSPHORUS_OW_T) %>% 
+  mutate(combined="NPratio",
+         Result.Value=N_P) %>% 
+  select(LAKE_ID,SAMPLE_DATE,year,decade,dyear,month,combined,Result.Value)
+temp<-merge(temp,NPratio,all=TRUE)
+
+#pull waterbodies/parameter combo with at least one sample in each july august, and at least three years in the 80s/early 90s and 2010s
+   decade<-temp %>% 
+    select(LAKE_ID,year,decade,month,combined) %>% 
+    distinct() %>% 
+    mutate(decade=ifelse(year %in% c(1990,1991,1992,1993,1994,1995),'early90s',decade),
+           july=ifelse(month=="07",1,0),
+           august=ifelse(month=="08",1,0)) %>% 
+    group_by(LAKE_ID,year,combined) %>% 
+    mutate(july=sum(july),
+           august=sum(august)) %>% 
+    ungroup() %>% 
+    filter(july>0,august>0) %>% 
+    select(LAKE_ID,year,decade,combined) %>% 
+    distinct() %>% 
+    group_by(LAKE_ID,decade,combined) %>% 
+    summarize(n=n()) %>% 
+    ungroup() %>% 
+    filter(decade %in% c('2010','1980','early90s')) %>% 
+    spread(decade,n) %>% 
+    filter(`1980`+early90s>2,`2010`>2) %>% 
+    select(LAKE_ID,combined) %>% 
+     distinct()
+
+temp<-merge(decade,temp,by=c('LAKE_ID','combined'),all.x = TRUE)
+temp<-temp %>% 
+  select(LAKE_ID,SAMPLE_DATE,year,month,decade,combined,Result.Value)
+#make all fields numeric
+temp<-temp %>% 
+    mutate(year=as.numeric(year),
+         month=as.numeric(month))
+
+#now generate yearly values for comparison with acid rain deposition
+acid<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+acid<-acid %>%
+  gather(LAKE_ID,acid,-YEAR) %>%
+  mutate(LAKE_ID=substring(LAKE_ID,2),
+         year=as.numeric(YEAR)) %>% 
+  select(LAKE_ID,year,acid) %>% distinct()
+#create data set of annually averaged values for July/August
+yearly<-temp %>% filter(month %in% c(7,8)) %>% 
+  group_by(LAKE_ID,year,combined) %>% 
+  summarize(Result.Value=median(Result.Value)) %>% 
+  ungroup()
+#remove acid years when we didn't collect data
+acid<-merge(yearly,acid,by=c('LAKE_ID','year'),all.x=TRUE)
+acid<-acid %>% select(LAKE_ID,year,acid) %>% distinct() %>% 
+  mutate(combined="ANNUAL ACID DEPOSITION",
+         Result.Value=acid) %>% 
+  select(LAKE_ID,year,combined,Result.Value) %>% distinct()
+yearly<-merge(yearly,acid,all=TRUE)
+
+
+rm(list=setdiff(ls(), c("data",'temp','yearly')))
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+sites<-temp %>% mutate(LOCATION_ID=paste(LAKE_ID,"C",sep="_")) %>% select(LAKE_ID,LOCATION_ID) %>% distinct()
+coordinates<-data %>% select(LOCATION_ID,X_Coordinate,Y_Coordinate) %>% distinct()
+sites<-merge(sites,coordinates,by=c('LOCATION_ID'),all.x = TRUE)
+rm(list=setdiff(ls(), c("data",'temp','sites','yearly')))
+
+library(ggmap)
+library(ggrepel)
+
+nybox<-make_bbox(sites,lon=X_Coordinate,lat=Y_Coordinate)
+
+print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+
+  geom_point(data=sites,aes(x=X_Coordinate,y=Y_Coordinate,label=LAKE_ID),size=4))
+
+
+junk<-temp %>% 
+  select(LAKE_ID,combined) %>% 
+  distinct() %>% 
+  mutate(n="x") %>% 
+  spread(combined,n,fill="") 
+DT::datatable(junk, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+rm(list=setdiff(ls(), c("data",'temp','yearly')))
+
+```
+
+
+
+## KT Slopes and Correlations
+
+We calculated both the seasonal Kendall Tau slope and the Kendall Tau
+Correlation.
+
+WARNING!!!! We suspect the trend in NO3/NO2 is actually a change in the
+method detection limit NO! I think it's a consequence of acid rain
+declines
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#calculate seasonal kt slopes
+params<-unique(temp$combined)
+nparams<-length(params)
+
+#create slopes table
+slopes<-data.frame(LAKE_ID=c("junk1","junk2"),slope=c(0,1),combined=c("junk","junk"))
+slopes<-slopes %>% 
+  mutate(LAKE_ID=as.character(LAKE_ID),
+         combined=as.character(combined))
+
+library(EnvStats)
+
+for(i in 1:nparams){
+  temp1<-temp %>% filter(combined==params[i]) %>% distinct()
+
+  lakes<-unique(temp1$LAKE_ID)
+  nlakes<-length(lakes)
+  
+  for(j in 1:nlakes){
+    temp2<-temp1 %>% 
+      filter(LAKE_ID==lakes[j]) %>% 
+      select(SAMPLE_DATE,year,month,Result.Value) %>% 
+      distinct() 
+    temp3<-kendallSeasonalTrendTest(Result.Value~month+year,data=temp2)
+    tau<-as.data.frame(t(temp3$estimate))
+    tau$LAKE_ID<-lakes[j]
+    tau$combined<-params[i]
+    tau$pvalue<-temp3$p.value[2]
+    tau<-tau %>% 
+      mutate(slope=ifelse(pvalue>0.1,0,slope)) %>% 
+      select(LAKE_ID,slope,combined) %>% 
+      distinct()
+    slopes<-merge(slopes,tau,all=TRUE)
+    rm(list=setdiff(ls(), c("data",'yearly','slopes','temp','temp','temp1','lakes','nlakes','params',
+                            'nparams','i','j')))
+  }
+  
+}
+rm(list=setdiff(ls(), c("data",'slopes','temp','yearly')))
+
+slopes<-slopes %>% 
+  filter(combined!="junk")
+sloped<-slopes %>% 
+  spread(combined,slope,fill=NA)
+
+DT::datatable(sloped, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+rm(list=setdiff(ls(), c("data",'slopes','temp','yearly')))
+```
+
+Plot of all the seasonal KT values
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(ggplot2)
+slopesh<-slopes %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined)) %>% 
+  mutate(pcolor=NA,
+         pcolor=ifelse(slope>0,"positive",pcolor),
+         pcolor=ifelse(slope<0,"negative",pcolor),
+         pcolor=ifelse(slope==0,"no slope",pcolor)) 
+  
+barslope<-slopesh %>% 
+  mutate(slope=ifelse(slope>0,"positive",slope),
+         slope=ifelse(slope<0,"negative",slope),
+         slope=ifelse(slope==0,"null",slope)) %>% 
+  group_by(combined,slope) %>% 
+  summarize(n=n()) %>% 
+  ungroup() 
+
+cat("  \n")
+  cat("  \n")
+  
+print(ggplot(barslope, aes(x = combined, y = n, fill=slope)) +
+        geom_bar(stat="identity") +
+        labs(title="Number of Positive, Null, and Negative slopes for Each Parameter",y="Number of Lakes",x="",colour = "") + 
+        scale_fill_grey(start = 0, end = .9)+ theme_bw())
+cat("  \n")
+  cat("  \n")
+```
+
+Table for publication
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+barslope<-slopesh %>% 
+  select(-pcolor) %>% 
+  mutate(slope=signif(slope,3)) %>% 
+  group_by(combined) %>% 
+  summarize(Median_slope=paste(signif(median(slope),3)," (",signif(quantile(slope,1/4),3)," : ",signif(quantile(slope,3/4),3),")",sep=""),
+            Range=paste(range(slope)[1]," : ",range(slope)[2],sep=""),
+            Obs=n()) %>% 
+  ungroup() %>% distinct() 
+units<-data %>% 
+  filter(Characteristic.Name %in% c("NITROGEN, NITRATE-NITRITE","ACIDITY, HYDROGEN ION (H+)","CHLOROPHYLL A","DEPTH, SECCHI DISK DEPTH","PHOSPHORUS","SPECIFIC CONDUCTANCE","TRUE COLOR","TEMPERATURE, WATER")) %>% select(Characteristic.Name,Result.Unit) %>% distinct() %>% 
+  filter(Result.Unit!="us/cm",Result.Unit!="deg c") %>% 
+  rename(combined=Characteristic.Name,units=Result.Unit) %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH","Secchi",combined),
+         combined=ifelse(combined=="PHOSPHORUS","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER","Temp",combined),
+         units=paste(units," per year",sep=""))  
+
+barslope<-merge(barslope,units,by=c('combined'),all.x=TRUE)
+barslope<-barslope %>% 
+  rename(Parameter = combined,
+         `Median Slope (IQR)`=Median_slope)
+library(kableExtra)
+barslope %>%
+  kbl() %>%
+  kable_styling()
+
+```
+
+Calculating the % change in color for comparison to values in the literature
+
+"%change = (Sen's slope * length of period)*100 / mean"
+https://www.sciencedirect.com/science/article/pii/S2212094714000292#s0115
+
+but to calculate % change/year, I then need to divide by the length of period
+So the simpler calculation is
+%change = ((Sen's slope * length of period)*100 / mean)/length of period
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+junk<-temp %>% 
+  filter(combined=="TRUE COLOR_OW_T") %>% 
+  group_by(LAKE_ID) %>% 
+  mutate(minyear=min(year),
+         maxyear=max(year),
+         length=maxyear-minyear) %>% 
+  ungroup() %>%  
+  group_by(LAKE_ID,length) %>% 
+  summarize(mean=mean(Result.Value)) %>% 
+  ungroup()
+junk2<-slopesh %>% 
+  filter(combined=="Color") %>% 
+  select(LAKE_ID,slope) %>% distinct()
+junk<-merge(junk2,junk,by=c('LAKE_ID'),all=TRUE)
+junk<-junk %>% 
+  mutate(pct_change_in_color=signif((((slope*length)*100)/mean)/length,3))
+junk %>%
+  kbl() %>%
+  kable_styling()
+print(paste("median percent change in color is ",mean(junk$pct_change_in_color),sep=""))
+```
+
+Comparison with Sabrina's analysis of the Chl/TP risiduals
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+barslope<-slopesh %>% 
+  select(-pcolor) %>% 
+  spread(combined,slope)
+#add in Sabrina's regression analysis
+sabrina<-read.csv("Sabrinas.Regression.results.csv")
+sabrina<-sabrina %>% rename(LAKE_ID=lake) %>% 
+  select(LAKE_ID,slope) %>% distinct() %>% rename(risiduals=slope)
+barslope<-merge(barslope,sabrina,by=c('LAKE_ID'),all=TRUE)
+barslope<-barslope %>% select(LAKE_ID,ChlA,P,Color,Temp,risiduals) %>% distinct() %>% arrange(ChlA,P)
+DT::datatable(barslope, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+  cat("  \n")
+  cat("  \n")
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#calculate KT Correlations
+temp0<-temp %>%
+      mutate(combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined)) %>% 
+  filter(combined %in% c('ChlA','Secchi','P','Color'))
+params<-unique(temp0$combined)
+nparams<-length(params)
+
+#create slopes table
+correlations<-data.frame(LAKE_ID=c("junk1","junk2"),correlation=c(0,1),pair=c("junk","junk"))
+correlations<-correlations %>% 
+  mutate(LAKE_ID=as.character(LAKE_ID),
+         pair=as.character(pair)) 
+
+    
+
+for(i in 1:nparams){
+  for(k in 1:nparams){
+    if(params[i]!=params[k]){
+    temp1<-temp0 %>% 
+      filter(combined %in% c(params[i],params[k])) %>% distinct() %>% 
+      select(LAKE_ID,SAMPLE_DATE,combined,Result.Value) %>% distinct() %>% 
+      spread(combined,Result.Value) %>% 
+      filter_at(c(3,4),all_vars(!is.na(.)))
+  
+    lakes<-unique(temp1$LAKE_ID)
+    nlakes<-length(lakes)
+    
+    for(j in 1:nlakes){
+      temp2<-temp1 %>% 
+        filter(LAKE_ID==lakes[j]) %>% 
+        distinct() 
+      temp3<-cor.test(temp2[,3],temp2[,4],alternative ="two.sided", method = "kendall", continuity = TRUE)
+      tau<-as.data.frame(t(temp3$estimate))
+      tau$LAKE_ID<-lakes[j]
+      tau$pair<-paste(params[i],params[k],sep="_")
+      tau$pvalue<-temp3$p.value
+      tau<-tau %>% 
+        mutate(correlation=ifelse(pvalue>0.1,0,tau)) %>% 
+        select(LAKE_ID,correlation,pair) %>% 
+        distinct()
+      correlations<-merge(correlations,tau,all=TRUE)
+      rm(list=setdiff(ls(), c("data",'yearly','slopes','correlations','temp','temp0','temp1','lakes',
+                              'nlakes','params','nparams','i','j','k')))
+    }
+    }
+  }
+}
+rm(list=setdiff(ls(), c("data",'slopes','temp','correlations','yearly')))
+
+correlations<-correlations %>% 
+  filter(pair!="junk")
+correlated<-correlations %>% 
+  spread(pair,correlation,fill=NA)
+
+#DT::datatable(sloped, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+rm(list=setdiff(ls(), c("data",'slopes','correlations','temp','yearly')))
+```
+
+Plot the Kendall Tau Correlation values for Trophic Parameters Not
+surprisingly, the traditional trophic indicators show a strong
+correlation
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(ggplot2)
+correlationsh<-correlations %>% 
+  mutate(pcolor=NA,
+         pcolor=ifelse(correlation>0,"positive",pcolor),
+         pcolor=ifelse(correlation<0,"negative",pcolor),
+         pcolor=ifelse(correlation==0,"null",pcolor)) 
+
+barcorrelation<-correlationsh %>%
+  mutate(correlation=ifelse(correlation>0,"positive",correlation),
+         correlation=ifelse(correlation<0,"negative",correlation),
+         correlation=ifelse(correlation==0,"null",correlation)) %>%
+  filter(pair %in% c("ChlA_Color","ChlA_NPratio","ChlA_PH","ChlA_Temp",
+         "P_Color","P_PH","P_Temp","Secchi_NPratio","Color_PH","Color_SpCond","Color_NPratio","Color_NO3NO2","NO3NO2_PH")) %>% distinct() %>%
+  group_by(pair,correlation) %>%
+  summarize(n=n()) %>%
+  ungroup()
+cat("  \n")
+  cat("  \n")
+print(ggplot(barcorrelation, aes(x = pair, y = n, fill=correlation)) +
+        geom_bar(stat="identity")+
+        labs(title="Number of Positive, Negative, and No Correaltion correlations for Each Parameter Pair",y="Number of Lakes",x="Parameter Pair",colour = "")+
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)))
+cat("  \n")
+  cat("  \n")
+barcorrelation<-barcorrelation %>% 
+  spread(correlation,n)
+DT::datatable(barcorrelation, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+  cat("  \n")
+  cat("  \n")
+  
+
+barcorrelation<-correlationsh %>%
+  mutate(correlation=ifelse(correlation>0,"positive",correlation),
+         correlation=ifelse(correlation<0,"negative",correlation),
+         correlation=ifelse(correlation==0,"null",correlation)) %>%
+  filter(pair %in% c("ChlA_P","ChlA_Secchi","Color_P")) %>% distinct() %>%
+  group_by(pair,correlation) %>%
+  summarize(n=n()) %>%
+  ungroup()
+cat("  \n")
+  cat("  \n")
+print(ggplot(barcorrelation, aes(x = pair, y = n, fill=correlation)) +
+        geom_bar(stat="identity")+
+        labs(title="Number of Positive, Null, and Negative correlations for Each Parameter Pair",y="Number of Lakes",x="",colour = "") + 
+        scale_fill_grey(start = 0, end = .9)+ theme_bw())
+cat("  \n")
+  cat("  \n")
+barcorrelation<-barcorrelation %>% 
+  spread(correlation,n)
+DT::datatable(barcorrelation, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+  cat("  \n")
+  cat("  \n")
+
+#plot correlations among trophic indicators
+temp1<-correlationsh %>% 
+  filter(pair %in% c('ChlA_P','ChlA_Secchi')) %>% distinct()
+#pull out chla-p pair as a factor to color by
+temp2<-temp1 %>% filter(pair=="ChlA_P") %>% distinct() %>% 
+  mutate(paircolor=rank(correlation, ties.method = 'first')) %>% select(LAKE_ID,paircolor) %>% distinct()
+temp1<-merge(temp1,temp2,by=c('LAKE_ID'),all=TRUE)
+print(ggplot(temp1,aes(x=pair,y=correlation, color=paircolor))+
+        geom_jitter(shape=16, position=position_jitter(0.2))+
+        scale_colour_gradient(low = "red", high = "green")+
+        theme(legend.position = "none")+
+        labs(title="Correlations Among Trophic Indicators Colored by LakeID",y="Correlation Estimate"))
+
+cat("  \n")
+  cat("  \n")
+DT::datatable(temp1, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+  cat("  \n")
+  cat("  \n")
+  
+
+# #plot correlations among trophic indicators
+# temp1<-correlationsh %>% 
+#   filter(pair %in% c('Color_NPratio','Color_PH','Color_P','Color_ChlA','NPratio_PH','NPratio_ChlA')) %>% distinct()
+# #pull out chla-p pair as a factor to color by
+# temp2<-temp1 %>% filter(pair=="NPratio_ChlA") %>% distinct() %>% 
+#   mutate(paircolor=rank(correlation, ties.method = 'first')) %>% select(LAKE_ID,paircolor) %>% distinct()
+# temp1<-merge(temp1,temp2,by=c('LAKE_ID'),all=TRUE)
+# print(ggplot(temp1,aes(x=pair,y=correlation, color=paircolor))+
+#         geom_jitter(shape=16, position=position_jitter(0.2))+
+#         scale_colour_gradient(low = "red", high = "green")+
+#         theme(legend.position = "none")+
+#         labs(title="Correlations Among Acid Rain Indicators Colored by LakeID",y="Correlation Estimate"))
+# 
+# cat("  \n")
+#   cat("  \n")
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#calculate KT Correlations For annual values including acid deposiion
+temp0<-yearly %>%
+      mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined),
+         combined=ifelse(combined=="ANNUAL ACID DEPOSITION","AcidDep",combined)) 
+params<-unique(temp0$combined)
+nparams<-length(params)
+
+#create slopes table
+correlations2<-data.frame(LAKE_ID=c("junk1","junk2"),correlation=c(0,1),pair=c("junk","junk"))
+correlations2<-correlations2 %>% 
+  mutate(LAKE_ID=as.character(LAKE_ID),
+         pair=as.character(pair)) 
+
+    
+
+for(i in 1:nparams){
+  for(k in 1:nparams){
+    if(params[i]!=params[k]){
+    temp1<-temp0 %>% 
+      filter(combined %in% c(params[i],params[k])) %>% distinct() %>% 
+      select(LAKE_ID,year,combined,Result.Value) %>% distinct() %>% 
+      spread(combined,Result.Value) %>% 
+      filter_at(c(3,4),all_vars(!is.na(.)))
+  
+    lakes<-unique(temp1$LAKE_ID)
+    nlakes<-length(lakes)
+    
+    for(j in 1:nlakes){
+      temp2<-temp1 %>% 
+        filter(LAKE_ID==lakes[j]) %>% 
+        distinct() 
+      temp3<-cor.test(temp2[,3],temp2[,4],alternative ="two.sided", method = "kendall", continuity = TRUE)
+      tau<-as.data.frame(t(temp3$estimate))
+      tau$LAKE_ID<-lakes[j]
+      tau$pair<-paste(params[i],params[k],sep="_")
+      tau$pvalue<-temp3$p.value
+      tau<-tau %>% 
+        mutate(correlation=ifelse(pvalue>0.1,0,tau)) %>% 
+        select(LAKE_ID,correlation,pair) %>% 
+        distinct()
+      correlations2<-merge(correlations2,tau,all=TRUE)
+      rm(list=setdiff(ls(), c("data",'yearly','slopes','correlations','correlations2','temp','temp0','temp1','lakes',
+                              'nlakes','params','nparams','i','j','k')))
+    }
+    }
+  }
+}
+rm(list=setdiff(ls(), c("data",'slopes','temp','correlations','correlations2','yearly')))
+
+correlations2<-correlations2 %>% 
+  filter(pair!="junk")
+correlated<-correlations2 %>% 
+  spread(pair,correlation,fill=NA)
+
+DT::datatable(sloped, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+rm(list=setdiff(ls(), c("data",'slopes','correlations','correlations2','temp','yearly')))
+```
+
+Plot the Annual Kendall Tau Correlation values
+
+Surprisingly, the Color does not show a strong correlation with acid
+deposition but Nitrate/Nitriate and the NP ratio does. This indicates
+that the primary impact of acid rain across the state of NY is on the NP
+ratio which dampens the impact of each individual P.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+library(ggplot2)
+correlationsh<-correlations2 %>% 
+  mutate(pcolor=NA,
+         pcolor=ifelse(correlation>0,"positive",pcolor),
+         pcolor=ifelse(correlation<0,"negative",pcolor),
+         pcolor=ifelse(correlation==0,"no correlation",pcolor)) 
+
+# barcorrelation<-correlationsh %>% 
+#   mutate(correlation=ifelse(correlation>0,"positive",correlation),
+#          correlation=ifelse(correlation<0,"negative",correlation),
+#          correlation=ifelse(correlation==0,"no correlation",correlation)) %>% 
+#   filter(pair %in% c('AcidDep_Color','AcidDep_NO3NO2','AcidDep_NPratio')) %>% distinct() %>% 
+#   group_by(pair,correlation) %>% 
+#   summarize(n=n()) %>% 
+#   ungroup()
+# cat("  \n")
+#   cat("  \n")
+# 
+# 
+# print(ggplot(barcorrelation, aes(x = pair, y = n, fill=correlation)) +
+#         geom_bar(stat="identity")+
+#         labs(title="Number of Positive, Negative, and No Correaltion correlations for Each Parameter Pair",y="Number of Lakes",x="Parameter Pair",colour = "")+
+#         theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)))
+# cat("  \n")
+#   cat("  \n")
+
+
+#plot correlations among trophic indicators
+temp1<-correlationsh %>% 
+  filter(pair %in% c('AcidDep_NO3NO2','AcidDep_NPratio')) %>% distinct()
+#pull out chla-p pair as a factor to color by
+temp2<-temp1 %>% filter(pair=="AcidDep_NO3NO2") %>% distinct() %>% 
+  mutate(paircolor=ifelse(correlation>0,1,ifelse(correlation<0,-1,0))) %>% select(LAKE_ID,paircolor) %>% distinct()
+temp1<-merge(temp1,temp2,by=c('LAKE_ID'),all=TRUE)
+print(ggplot(temp1,aes(x=pair,y=correlation, color=paircolor))+
+        geom_jitter(shape=16, position=position_jitter(0.2))+
+        scale_colour_gradient(low = "red", high = "green")+
+        theme(legend.position = "none")+
+        labs(title="Correlations Among Acid Rain Indicators Colored by LakeID",y="Correlation Estimate")+
+        theme(axis.text.x = element_text(angle = 90, vjust = 0.5, hjust=1)))
+
+cat("  \n")
+  cat("  \n")
+  
+
+
+```
+
+Map of these locations
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#params<-unique(slopesh$combined)
+#nparams<-length(params)#
+
+#for(i in 1:nparams){
+#  temp0<-slopesh %>% filter(combined==params[i])
+#print(ggplot(temp0, aes(x = combined, y = slope,color=pcolor)) +
+#        theme_minimal()+
+#        geom_violin()+
+#        geom_dotplot(binaxis='y', stackdir='center', dotsize=1)+
+#        labs(y="slope of trend data",x=params[i],title=""))
+#}
+
+
+#First make a map of lakes that have improving ChlA but not improving TP$
+improving<-slopes %>% 
+  filter(combined %in% c('PHOSPHORUS_OW_T','CHLOROPHYLL A_OW_T','NPratio')) %>% 
+  mutate(combined=ifelse(combined=="PHOSPHORUS_OW_T","TP",ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined))) %>% 
+  mutate(slope=ifelse(slope==0,0,slope)) %>% 
+  spread(combined,slope) %>% 
+  mutate(ChlA_TP=ChlA-TP) %>%
+  select(LAKE_ID,ChlA_TP,ChlA,TP,NPratio) %>% distinct() %>% 
+  mutate(zebra_mussels=ifelse(LAKE_ID %in% c('0402CON0067','0202CHA0122','1005GLE0441','0703CAZ0153','0706OWA0212',
+                        '0602EAT0163','0403SIL0115','0601CAN0392','0906BLA0001','0703DER0139A','0602EAR0146',
+                        '0602SON0072','0906BUT0054'),"zebra","_"))
+#what percentage of the lakes with incongruous ChlA and TP trends have significant NO3/NO2 and acid deposition correlation. And how do the difference in slopes compare to the TP CHlA correlations
+acidcorr<-correlationsh %>% filter(pair=="AcidDep_NPratio",correlation>0) %>% 
+  rename(AcidDep_NPratio=correlation) %>% select(LAKE_ID,AcidDep_NPratio) %>% distinct() 
+tpchlacorr<-correlations %>% filter(pair=="ChlA_P") %>% mutate(TP_ChlA=correlation) %>% select(LAKE_ID,TP_ChlA) %>% distinct()
+acidcorr<-merge(acidcorr,tpchlacorr,by=c('LAKE_ID'),all=TRUE)
+#merge back in
+improving<-merge(improving,acidcorr,by=c('LAKE_ID'),all.x=TRUE)
+improving<-improving %>% filter(!is.na(ChlA_TP)) %>% arrange(ChlA_TP) %>%
+  mutate(NPratio=ifelse(NPratio==0.000000000,"0",NPratio),
+         TP_ChlA=ifelse(TP_ChlA==0,"0",TP_ChlA))
+DT::datatable(improving, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+# #map each parameter trend:
+# temp3<-temp1 %>% filter(pair=="AcidDep_NO3NO2") %>% distinct() %>% 
+#   mutate(LOCATION_ID=paste(LAKE_ID,"_C",sep=""),
+#          slope=ifelse(correlation>0,"+",ifelse(correlation<0,"-","0"))) %>%
+#   select(LAKE_ID,LOCATION_ID,slope)
+# coordinates<-data %>% select(LOCATION_ID,X_Coordinate,Y_Coordinate) %>% distinct()
+# temp3<-merge(temp3,coordinates,by=c('LOCATION_ID'),all.x = TRUE)
+# 
+# #doing chla, phosphorus, secchi, and color first
+# nybox<-make_bbox(temp3,lon=X_Coordinate,lat=Y_Coordinate)
+# cat("  \n")
+# print("Locations that Positively Correlated Acid Deposition and NO3NO2")
+# cat("  \n")
+# print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+geom_point(data=temp1,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+# #phosphorus
+# temp1<-slopesh2 %>% filter(combined=="P") 
+# nybox<-make_bbox(temp1,lon=X_Coordinate,lat=Y_Coordinate)
+# cat("  \n")
+# print("P")
+# cat("  \n")
+# print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+geom_point(data=temp1,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+# #secchi
+# temp1<-slopesh2 %>% filter(combined=="Secchi") 
+# nybox<-make_bbox(temp1,lon=X_Coordinate,lat=Y_Coordinate)
+# cat("  \n")
+# print("Secchi9435")
+# cat("  \n")
+# print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+geom_point(data=temp1,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+
+
+temp1<-slopes 
+sites<-temp1 %>% mutate(LOCATION_ID=paste(LAKE_ID,"C",sep="_")) %>% select(LAKE_ID,LOCATION_ID,combined,slope) %>% distinct()
+coordinates<-data %>% select(LOCATION_ID,X_Coordinate,Y_Coordinate) %>% distinct()
+sites<-merge(sites,coordinates,by=c('LOCATION_ID'),all.x = TRUE)
+
+#color
+temp2<-sites %>% filter(combined=="TRUE COLOR_OW_T")
+nybox<-make_bbox(temp2,lon=X_Coordinate,lat=Y_Coordinate)
+cat("  \n")
+print("Color")
+cat("  \n")
+print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+geom_point(data=temp2,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+
+temp2<-sites %>% filter(combined=="TEMPERATURE, WATER_OW_NA")
+nybox<-make_bbox(temp2,lon=X_Coordinate,lat=Y_Coordinate)
+cat("  \n")
+print("Color")
+cat("  \n")
+print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+geom_point(data=temp2,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+
+
+# slopesh2<-slopesh2 %>%
+#   filter(combined %in% c('NO3NO2','Temp','SpCond'))
+# params<-unique(slopesh2$combined)
+# nparams<-length(params)
+# 
+# for(i in 1:nparams){
+#   temp1<-slopesh2 %>% filter(combined==params[i])
+# nybox<-make_bbox(temp1,lon=X_Coordinate,lat=Y_Coordinate)
+# cat("  \n")
+#   cat("  \n")
+# print(params[i])
+# cat("  \n")
+#   cat("  \n")
+# 
+# print(ny.map1<-qmap(nybox,source="osm",maptype="terrain",color="bw")+
+#   geom_point(data=temp1,aes(x=X_Coordinate,y=Y_Coordinate,color=slope),size=4))
+# }
+#   
+rm(list=setdiff(ls(), c("data",'temp','yearly',"slopes",'temp80','temp10')))
+
+```
+
+## Plots by lake
+
+The color of the point is determined by the month it was sampled in as
+indicated by the legend to the right of each plot. The Kendall Tau slope
+of the data is given next to the parameter name. Any slope that was not
+significant (p\>0.1) was converted to 0.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+#add slope to param name
+temp0<-merge(temp,slopes,by=c('LAKE_ID','combined'),all = TRUE)
+temp0<-temp0 %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined),
+         slope=ifelse(combined=="P",slope*100,slope),
+         slope=round(slope,2),
+         combined=paste(combined,slope,by=""))
+  
+
+library(gridExtra)
+library(ggplot2)
+
+lakes<-unique(temp$LAKE_ID)
+nlakes<-length(lakes)
+
+
+for(i in 1:nlakes){
+  temp1<-temp0 %>% filter(LAKE_ID==lakes[i]) %>% distinct()
+  
+  cat(' \n\n ')
+  print(lakes[i])
+  cat(' \n\n ')
+  
+    print(ggplot(data=temp1,aes(year,Result.Value))+
+               geom_point(aes(colour=factor(month)))+
+               geom_smooth()+
+            labs(y="units vary by parameter",x = "year") +
+            facet_wrap(~combined,scales = "free_y"))
+}
+
+
+rm(list=setdiff(ls(), c("data",'yearly','slopes','temp','temp80','temp10')))
+
+```
+
+## Plots by param
+
+The color of the point is determined by the month it was sampled in as
+indicated by the legend to the right of each plot. The Kendall Tau slope
+of the data is given next to the parameter name. Any slope that was not
+significant (p\>0.1) was converted to 0.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+temp0<-temp %>% 
+  mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined))
+  
+slope_junk<-slopes %>% 
+    mutate(combined=ifelse(combined=="NITROGEN, NITRATE-NITRITE_OW_T","NO3NO2",combined),
+         combined=ifelse(combined=="ACIDITY, HYDROGEN ION (H+)_OW_NA","Acidity",combined),
+         combined=ifelse(combined=="CHLOROPHYLL A_OW_T","ChlA",combined),
+         combined=ifelse(combined=="DEPTH, SECCHI DISK DEPTH_SD_NA","Secchi",combined),
+         combined=ifelse(combined=="PH_OW_NA","PH",combined),
+         combined=ifelse(combined=="PHOSPHORUS_OW_T","P",combined),
+         combined=ifelse(combined=="SPECIFIC CONDUCTANCE_OW_NA","SpCond",combined),
+         combined=ifelse(combined=="TRUE COLOR_OW_T","Color",combined),
+         combined=ifelse(combined=="TEMPERATURE, WATER_OW_NA","Temp",combined))
+
+  params<-temp0 
+  params<-unique(params$combined)
+  nparams<-length(params)
+
+
+for(i in 1:nparams){
+  temp1<-temp0 %>% 
+    filter(combined==params[i]) %>% 
+    distinct() 
+  temp1<-merge(temp1,slope_junk,by=c('LAKE_ID','combined'),all.x = TRUE)
+  temp1<-temp1 %>% 
+    mutate(slope=ifelse(combined=="P",slope*100,slope),
+         slope=round(slope,2),
+         LAKE_ID=paste(LAKE_ID,slope,sep="_"),
+         LAKE_ID=fct_reorder(LAKE_ID,-slope)) %>% 
+    arrange(LAKE_ID,SAMPLE_DATE) 
+  cat(' \n\n ')
+  print(params[i])
+  cat(' \n\n ')
+  
+  lakes<-unique(temp1$LAKE_ID)
+  nlakes<-length(lakes)
+  nlaked<-ceiling((length(lakes))/12)
+  
+ for(i in 1:nlaked) {
+    j=i*12
+    k=ifelse(j-11>nlakes,nlakes,j-11)
+    temp10<-temp1 %>% filter(LAKE_ID %in% lakes[k:j])
+    print(ggplot(data=temp10,aes(year,Result.Value))+
+               geom_point(aes(colour=factor(month)))+
+               geom_smooth()+
+            labs(y="units vary by parameter",x = "year") +
+            facet_wrap(~LAKE_ID,scales = "free_y", ncol=3))
+ }
+}
+
+rm(list=setdiff(ls(), c("data",'yearly','slopes','temp','temp80','temp10')))
+
+```
+
+## Switchback
+
+To examine the non-linear trends in brownification and eutrophication,
+we deseasoned the data using the MSSA analysis. The MSSA analysis
+deseasons the data which simply means it removes the seasonal influence.
+It's important to note that season could be with or over multiple years.
+This analysis helps us to examine non-linear trends as per Kohli et al
+2017.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp0<-temp %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         COLOR=`TRUE COLOR_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,
+         SECCHI=`DEPTH, SECCHI DISK DEPTH_SD_NA`) %>% 
+  select(LAKE_ID,SAMPLE_DATE,year,month,decade,COLOR,PHOS)
+
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+#convert lake id to row number
+lakes<-temp0 %>% 
+  select(LAKE_ID) %>% 
+  arrange(LAKE_ID) %>% 
+  distinct() 
+lakes<-lakes %>% 
+  mutate(lake=row.names(lakes),
+         lake=as.numeric(lake))
+#print(lakes$LAKE_ID)
+temp0<-merge(temp0,lakes,by=c('LAKE_ID'),all.x = TRUE)
+
+lakes<-unique(temp0$LAKE_ID)
+nlakes<-length(lakes)
+
+trend<-data.frame(SAMPLE_DATE=c('2025-06-06','2025-05-08'),
+                  Trend_COLOR=c(0,0),
+                  Trend_PHOS=c(0,0),
+                  Original_COLOR=c(0,0),
+                  Original_PHOS=c(0,0))
+trend<-trend %>% 
+  mutate(SAMPLE_DATE=as.Date(SAMPLE_DATE,format="%Y-%m-%d"))
+
+for(i in 1:nlakes){
+  temp1<-temp0 %>% filter(LAKE_ID==lakes[i]) %>% 
+    select(LAKE_ID,SAMPLE_DATE,PHOS,COLOR) %>% 
+    distinct()
+  
+  #length of temp1 to set number for correlation analysis
+  m<-(length(temp1$SAMPLE_DATE))/2
+
+  # convert to time series using read.zoo
+  library(zoo)
+  tsi <- zoo(temp1[3:4],temp1$SAMPLE_DATE)
+  
+  #perform MSSA analysis
+  library("Rssa")
+  s <- ssa(tsi, kind = "mssa") 
+  r <- reconstruct(s, groups = list(Trend = c(1,2)))
+  
+  #plot the MSSA results
+  trend_junk<-fortify.zoo(r$Trend, name = "Date")
+  trend_junk<-trend_junk %>% 
+    mutate(Date = as.Date(Date,format="%Y-%m-%d")) %>% 
+    rename(SAMPLE_DATE=Date) %>% 
+    distinct() %>% 
+    rename(Trend_COLOR=COLOR,
+           Trend_PHOS=PHOS)
+  orig<-temp1 %>% 
+    rename(Original_COLOR=COLOR,
+           Original_PHOS=PHOS)
+  forplot<-merge(orig,trend_junk,all=TRUE)
+  trend<-merge(trend,forplot,all=TRUE)
+  
+}
+
+temp0<-temp %>% 
+  select(LAKE_ID,SAMPLE_DATE,year) %>% 
+  distinct() 
+temp0<-merge(temp0,trend,by=c('LAKE_ID','SAMPLE_DATE'),all.x = TRUE)
+temp0 <-temp0 %>% 
+  select(-Original_COLOR,-Original_PHOS) %>% 
+  gather(parameter,result,-LAKE_ID,-SAMPLE_DATE,-year) %>% 
+  mutate(month=substr(SAMPLE_DATE,6,7)) 
+#now spread so can create plots
+temp0<-temp0 %>% 
+  spread(parameter,result)
+#add zebra mussel invasions
+temp0<-temp0 %>% 
+    mutate(zebra_mussels="no zebra mussels",
+zebra_mussels=ifelse((LAKE_ID=='0402CON0067' & year>=1991),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0202CHA0122' & year>=1995),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='1005GLE0441' & year>=1996),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0703CAZ0153' & year>=1997),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0706OWA0212' & year>=1997),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602EAT0163' & year>=1999),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0403SIL0115' & year>=2001),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0601CAN0392' & year>=2002),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0906BLA0001' & year>=2004),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0703DER0139A' & year>=2008),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602EAR0146' & year>=2009),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602SON0072' & year>=2017),"zebra mussels invaded",zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0906BUT0054' & year>=2018),"zebra mussels invaded",zebra_mussels))
+
+#change year to a character so can plot as a color
+temp0<-temp0 %>% mutate(year=as.character(year))
+```
+
+Here are lakes that show a switchback in both color and phosphorus
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+library(gridExtra)
+library(ggplot2)
+
+lakes<-temp0 %>% filter(LAKE_ID %in% c("0201CUB0115","0202CHA0122","0602BRA0154","0602CRO0073","0602EAR0146","0602EAT0163","0602HAT0155",
+"0602LEB0153","0602MOR0152","0602PET0078","0602SON0072","0703CAZ0153","0703TUS0153A","0705COM0333","0906BON0024",
+"0906BUT0054","1005GLE0441","1102BAB1109","1104SAC0314","1302CAR0062A","1308ROB0902","1310QUE0057",
+"0906BLA0001","1204MAD1051","1401ANA0251","1404OQU0383"))
+  lakes<-unique(lakes$LAKE_ID)
+  nlakes<-length(lakes)
+  nlaked<-ceiling((length(lakes))/9)
+  
+ for(i in 1:nlaked) {
+    j=i*9
+    k=ifelse(j-8>nlakes,nlakes,j-8)
+    temp10<-temp0 %>% filter(LAKE_ID %in% lakes[k:j])
+    print(ggplot(data=temp10,aes(Trend_COLOR,Trend_PHOS,color=year,shape=zebra_mussels,size=zebra_mussels))+
+               geom_point()+
+            scale_shape_manual(values=c(16,3))+
+            scale_size_manual(values=c(1,2))+
+            labs(y="Phosphorus ug/L",x = "Color (color units)") +
+            facet_wrap(~LAKE_ID,scales = "free_y"))
+    cat(' \n\n ')
+ }
+cat(' \n\n ')
+
+```
+
+The siwtchback in these lakes occurs at a different time for color
+versus phosphorus or in color only
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+library(gridExtra)
+library(ggplot2)
+
+lakes<-temp0 %>% filter(LAKE_ID %in% c("0202FIN0153","0403SIL0115","0703DER0139A","0705DUC0222","1104SCH0374","1701LFR0662","0302SOD0096"))
+
+    print(ggplot(data=lakes,aes(Trend_COLOR,Trend_PHOS,color=year,shape=zebra_mussels,size=zebra_mussels))+
+               geom_point()+
+            scale_shape_manual(values=c(16,3))+
+            scale_size_manual(values=c(1,2))+
+            labs(y="Phosphorus ug/L",x = "Color (color units)") +
+            facet_wrap(~LAKE_ID,scales = "free_y"))
+    cat(' \n\n ')
+```
+
+Thes lakes don't display a switchback or don't have enough data to
+detect one. To be clear, these lakes have enough data but do not show a
+switchback:"1104GOO0672A","1302WAC0117","0602MEL0039"
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+
+library(gridExtra)
+library(ggplot2)
+
+lakes<-temp0 %>% filter(LAKE_ID %in% c("1104GOO0672A","1302WAC0117","0602MEL0039","0402CON0067","0601CAN0392","0706OWA0212","1310NAS0034","1501LUC0982B","1402WOL0037","0801SEC0782B"))
+
+    print(ggplot(data=lakes,aes(Trend_COLOR,Trend_PHOS,color=year,shape=zebra_mussels,size=zebra_mussels))+
+               geom_point()+
+            scale_shape_manual(values=c(16,3))+
+            scale_size_manual(values=c(1,2))+
+            labs(y="Phosphorus ug/L",x = "Color (color units)") +
+            facet_wrap(~LAKE_ID,scales = "free_y"))
+    cat(' \n\n ')
+```
+
+## ChlA Predictors
+
+The following is our collection of potential predictors for Chlorophyll
+A. We pulled:
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp<-temp %>% 
+  filter(combined %in% c("CHLOROPHYLL A_OW_T", "DEPTH, SECCHI DISK DEPTH_SD_NA", "PHOSPHORUS_OW_T", "TRUE COLOR_OW_T",'NPratio'))
+  
+  #now subset further to only the first two and last two years of sampling and only from July/August
+temp80<-temp %>% 
+  spread(combined,Result.Value) %>% 
+  filter(decade %in% c('1980','2010')|year %in% c('1990','1991','1992','1993','1994','1995'))
+temp80<-na.omit(temp80)
+temp80<-temp80 %>% gather(combined,Result.Value,-LAKE_ID,-SAMPLE_DATE,-year,-month,-decade)
+tempall<-temp80
+temp10<-temp80 %>% filter(decade=='2010')
+temp80<-temp80 %>% filter(decade=='1980'|year %in% c('1990','1991','1992','1993','1994','1995'))
+```
+
+Eco regions
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+eco<-read.csv("Trend_Lakes_Ecoregion.csv")
+eco<-eco %>% 
+  select(LAKE_ID,US_L3CODE) %>% 
+  rename(ECOREG=US_L3CODE) %>% 
+  mutate(ECOREG=as.numeric(ECOREG))
+
+#create the parameter
+predictors<-eco
+```
+
+General characteristics from the Nature Conservancy. For these types,
+values were converted to 0 and 1 with 0 being the lesser status (in list
+0 value , 1 value, 2 value) trophic = Oligo-Mesotrophic, Eutrophic
+
+temp_type = Very Cold, Cold, Warm to Cool
+
+alk_type=Acidic, Circumneutral, Alkaline
+
+depth= less than 6m, more than 6m size_class= 2.5-10, 10-25, 25-50,
+50-124, \>124 (These roughly correspond to the 1-4,4-10,10-20,20-50,\>50
+hectare categories in the probability study)
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#pull the impervious surface cover
+library(readxl)
+#pull nla characteristics
+TNCtraits<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/Trend_Lakes_TNC_all_attributes.xlsx"
+TNCtraits<-read_excel(TNCtraits, sheet ="Trend_Lakes_TNC_all_attributes") 
+TNCtraits<-TNCtraits %>% 
+  mutate(temp_type=2, #for cold
+         temp_type=ifelse(grepl("Warm to Cool",TYPE),3,temp_type),
+         temp_type=ifelse(grepl("Very Cold",TYPE),1,temp_type),
+         depth_type=2, #for cold
+         depth_type=ifelse(MAXFT<19.7,1,depth_type),
+         alk_type=1,#Acidic
+         alk_type=ifelse(grepl("Alkaline",TYPE),3,alk_type),
+         alk_type=ifelse(grepl("Circumneutral",TYPE),2,alk_type),
+         size_class=1,#smallest
+         size_class=ifelse(ACRES>10,2,size_class),
+         size_class=ifelse(ACRES>25,3,size_class),
+         size_class=ifelse(ACRES>50,4,size_class),
+         size_class=ifelse(ACRES>124,5,size_class),
+         temp_type=as.numeric(temp_type),
+         alk_type=as.numeric(alk_type),
+         size_class=as.numeric(size_class),
+         depth_type=as.numeric(depth_type)) 
+         
+#########################################################################################################
+#I DON"T HAVE THESE NEXT TWO FILES ANYMORE BUT I DONT THINK I NEED THEM
+#########################################################################################################
+
+# TNCkey<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/TNC_Dataset_Attribute_Key.xlsx"
+# TNCkey<-read_excel(TNCkey, sheet ="Sheet1")
+# TNCkey<-TNCkey %>% select(Field,Description) %>% arrange(Field) %>% 
+#   mutate(Field=ifelse(Field=="LC100for","LC100kfor",Field)) %>% 
+#   filter(substr(Field,1,6)!="Please")
+
+# TNCdefs<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/TNC_waterbodies_all_input_sample_data.xlsx"
+# TNCdefs<-read_excel(TNCdefs, sheet ="field definitions")
+# TNCdefs<-TNCdefs %>% 
+#   #these are not in the %>% file
+#   filter(!Field %in% c("WBCOMID", "STMCOMID", "NELP_ID", "NLA_ID", "NELP_ALK","NLA_ALK", "STATE_ALK", "WATGOV_ALK", "NELP_ALKCL", "NLA_ALKCL","ST_ALK_CL", "WATGOV_CL", "FIN_ALKCL", "ALKCL", "NELP_CHLA",
+#                        "NLA_CHLA", "STATE_CHLA", "TRPHCL_NEL", "TRPHCL_NLA", "TROPHCL_ST","LAGOAVGCHL", "FIN_TROPCL", "TROPCL", "HOLLISTER", "TRPHCL_HOL",
+#                        "SRCTEMP", "S_TEMPCL", "TEMPCL3CCW", "TEMPCL4"))
+
+#remove fields that aren't in the keys
+TNCtraits<-TNCtraits %>% 
+  select(LAKE_ID,MAXFT,ACRES,TYPE,OUT_TROPCL,OUT_ALKCL,DEPTH_CL,temp_type,alk_type,size_class,depth_type) #%>% 
+#looking at those traits that are not numeric to figure out which ones to remove
+#TNCtraits_num<-TNCtraits %>% select(where(is.numeric))
+#TNCtraits_char<-TNCtraits %>% select(!where(is.numeric))
+#  select(-TYPE,-OUT_ALKCL,-OUT_TROPCL,-DEPTH_CL,-CPLAIN,-PRIMPUR,-DEPTHSRC,-ECOREG)
+
+#remove fields that aren't helpful #human judgement
+TNCtraits<-TNCtraits %>%  
+  select(LAKE_ID,MAXFT,ACRES,temp_type,alk_type,size_class,depth_type)
+
+
+#merge the parameter
+predictors<-merge(predictors,TNCtraits,by=c('LAKE_ID'))
+
+
+
+```
+
+acid deposition
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#Now add predictors with data from individual years
+#and create a long form predictor variable with records for individual years
+#and a short for predictor variable with only one record per lake
+
+acid<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+acid<-acid %>% 
+  gather(LAKE_ID,acid,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) %>% 
+  filter(year %in% c('1985','2018')) %>% 
+  spread(year,acid) %>% 
+  mutate(acid_slope=`2018`-`1985`) %>% 
+  select(LAKE_ID,acid_slope)
+predictors_short<-merge(predictors,acid,by=c('LAKE_ID'),all.x=TRUE)
+
+acid<-read.csv("Trend_Lake_Watersheds_NADP_SplusN_transposed.csv")
+acid<-acid %>% 
+  gather(LAKE_ID,acid,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  mutate(LAKE_ID=sub('.', '', LAKE_ID)) 
+predictors_long<-merge(predictors,acid,by=c('LAKE_ID'),all.x=TRUE)
+
+#remove rows that have any missing values
+predictors_short<-na.omit(predictors_short)
+predictors_long<-na.omit(predictors_long)
+
+#DT::datatable(predictors_short, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'slopes','predictors_short','predictors_long','temp80','temp10','tempall')))
+```
+
+precipitation
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+########################################################################
+#TURNED OFF because the lake ids in this file are missing leading 0s
+########################################################################
+
+#pull the impervious surface cover
+library(readxl)
+#read in table types
+imperviousfile<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/Trend_Lakes_AVG_Annual_Precip_cm-yr.xlsx"
+one<-read_excel(imperviousfile, sheet ="TRANSPOSED")
+one<-one %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  filter(year %in% c('1985','2016')) %>% 
+  spread(year,precipitation) %>% 
+  mutate(precipitation_slope=`2016`-`1985`) %>% 
+  select(LAKE_ID,precipitation_slope)
+predictors_short<-merge(predictors_short,one,by=c('LAKE_ID'),all.x=TRUE)
+
+one<-read_excel(imperviousfile, sheet ="TRANSPOSED")
+one<-one %>% 
+  gather(LAKE_ID,precipitation,-YEAR) %>% 
+  rename(year=YEAR) %>% 
+  spread(year,precipitation) %>% 
+  mutate(`2017`=`2016`,
+         `2018`=`2016`,
+         `2019`=`2016`) %>% 
+  gather(year,precipitation,-LAKE_ID)
+predictors_long<-merge(predictors_long,one,by=c('LAKE_ID','year'),all.x=TRUE)
+
+#remove rows that have any missing values
+predictors_short<-na.omit(predictors_short)
+predictors_long<-na.omit(predictors_long)
+
+#DT::datatable(predictors_short, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'slopes','predictors_short','predictors_long','temp80','temp10','tempall')))
+```
+
+disturbance change both across the entire watershed
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+#pull the impervious surface cover
+library(readxl)
+#read in table types
+imperviousfile<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/Trend_Lakes_Watersheds_LCMAP.xlsx"
+one<-read_excel(imperviousfile, sheet ="1985")
+one$year<-"1985"
+impervious<-read_excel(imperviousfile, sheet ="2015")
+impervious$year<-"2015"
+impervious<-merge(impervious,one,all=TRUE)
+
+impervious<-impervious %>% 
+  gather(combined,result,-LAKE_ID,-year) %>% 
+  mutate(result=result/10) %>% 
+  spread(combined,result,fill=NA)
+#add LDI coefficients
+impervious<-impervious %>% 
+  mutate(DEVELOPED=7.84*DEVELOPED,
+         CROPLAND=4.14*CROPLAND,
+         GRASS_SHRUB=2.715*GRASS_SHRUB,
+         BARREN=8.32*BARREN,
+         LDI=DEVELOPED+CROPLAND+GRASS_SHRUB+BARREN+WETLAND+FOREST) %>% 
+  select(LAKE_ID,year,LDI)
+
+#now simplify for the regression
+impervious_slope<-impervious %>% 
+  filter(year=="1985"|year=="2015") %>% 
+  spread(year,LDI,fill=NA) %>% 
+  mutate(LDI_slope=`2015`-`1985`,
+         LDI_first=`1985`) %>% 
+  select(-`1985`,-`2015`) 
+
+impervious<-impervious %>% 
+    filter(year=="1985"|year=="2015") %>% 
+  spread(year,LDI,fill=NA) %>% 
+  mutate(`1986`=`1985`,`1987`=`1985`,`1988`=`1985`,`1989`=`1985`,`1990`=`1985`,
+         `2010`=`2015`,`2011`=`2015`,`2012`=`2015`,`2013`=`2015`,`2014`=`2015`,
+         `2015`=`2015`,`2016`=`2015`,`2017`=`2015`,`2018`=`2015`,`2019`=`2015`) %>% 
+  gather(year,LDI,-LAKE_ID)
+
+predictors_long<-merge(predictors_long,impervious,by=c('LAKE_ID','year'),all=TRUE)
+predictors_short<-merge(predictors_short,impervious_slope,by=c('LAKE_ID'),all.x=TRUE)
+
+#remove rows that have any missing values
+predictors_short<-na.omit(predictors_short)
+predictors_long<-na.omit(predictors_long)
+
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'slopes','predictors_short','predictors_long','temp80','temp10','tempall')))
+```
+
+100m buffer Disturbance change
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+#pull the impervious surface cover
+library(readxl)
+#read in table types
+imperviousfile<-"C:/Users/amonion/OneDrive - New York State Office of Information Technology Services/Rscripts/Trend/Trend_Lakes_100m_Buffer_landcover_change.xlsx"
+one<-read_excel(imperviousfile, sheet ="1985_100m")
+one$year<-"1985"
+impervious<-read_excel(imperviousfile, sheet ="2017_100m")
+impervious$year<-"2017"
+impervious<-merge(impervious,one,all=TRUE)
+
+impervious<-impervious %>% 
+  gather(combined,result,-LAKE_ID,-year) %>% 
+  mutate(result=result/10) %>% 
+  spread(combined,result,fill=NA)
+#add LDI coefficients
+impervious<-impervious %>% 
+  mutate(DEVELOPED=7.84*DEVELOPED,
+         CROPLAND=4.14*CROPLAND,
+         GRASS_SHRUB=2.715*GRASS_SHRUB,
+         BARREN=8.32*BARREN,
+         LDI_100m=DEVELOPED+CROPLAND+GRASS_SHRUB+BARREN+WETLAND+FOREST) %>% 
+  select(LAKE_ID,year,LDI_100m)
+
+#now simplify for the regression
+impervious_slope<-impervious %>% 
+  filter(year=="1985"|year=="2017") %>% 
+  spread(year,LDI_100m,fill=NA) %>% 
+  mutate(LDI_100m_slope=`2017`-`1985`,
+         LDI_100m_first=`1985`) %>% 
+  select(-`1985`,-`2017`) 
+
+impervious<-impervious %>% 
+    filter(year=="1985"|year=="2017") %>% 
+  spread(year,LDI_100m,fill=NA) %>% 
+  mutate(`1986`=`1985`,`1987`=`1985`,`1988`=`1985`,`1989`=`1985`,`1990`=`1985`,
+         `2010`=`2017`,`2011`=`2017`,`2012`=`2017`,`2013`=`2017`,`2014`=`2017`,
+         `2017`=`2017`,`2016`=`2017`,`2017`=`2017`,`2018`=`2017`,`2019`=`2017`) %>% 
+  gather(year,LDI_100m,-LAKE_ID)
+
+predictors_long<-merge(predictors_long,impervious,by=c('LAKE_ID','year'),all=TRUE)
+predictors_short<-merge(predictors_short,impervious_slope,by=c('LAKE_ID'),all.x=TRUE)
+
+#remove rows that have any missing values
+predictors_short<-na.omit(predictors_short)
+predictors_long<-na.omit(predictors_long)
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'slopes','predictors_short','predictors_long','temp80','temp10','tempall')))
+```
+
+zebra mussel invasion dates and algaecide treatment dates
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+predictors_short<-predictors_short %>% 
+  mutate(zebra_mussels=0,
+         zebra_mussels=ifelse(LAKE_ID=='0402CON0067',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0202CHA0122',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='1005GLE0441',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0703CAZ0153',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0706OWA0212',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0602EAT0163',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0403SIL0115',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0601CAN0392',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0906BLA0001',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0703DER0139A',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0602EAR0146',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0602SON0072',1,zebra_mussels),
+zebra_mussels=ifelse(LAKE_ID=='0906BUT0054',1,zebra_mussels),
+algaecide=0,
+algaecide = ifelse(LAKE_ID=="0602MOR0152",1,algaecide),
+algaecide = ifelse(LAKE_ID=="1308ROB0902",1,algaecide))
+
+predictors_long<-predictors_long %>% 
+  mutate(zebra_mussels=0,
+zebra_mussels=ifelse((LAKE_ID=='0402CON0067' & year>=1991),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0202CHA0122' & year>=1995),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='1005GLE0441' & year>=1996),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0703CAZ0153' & year>=1997),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0706OWA0212' & year>=1997),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602EAT0163' & year>=1999),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0403SIL0115' & year>=2001),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0601CAN0392' & year>=2002),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0906BLA0001' & year>=2004),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0703DER0139A' & year>=2008),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602EAR0146' & year>=2009),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0602SON0072' & year>=2017),1,zebra_mussels),
+zebra_mussels=ifelse((LAKE_ID=='0906BUT0054' & year>=2018),1,zebra_mussels),
+algaecide=0,
+algaecide = ifelse(LAKE_ID=="0602MOR0152"& year %in% c(2014,2015,2016),1,algaecide),
+algaecide = ifelse(LAKE_ID=="1308ROB0902"& year %in% c(1991),1,algaecide))
+
+DT::datatable(predictors_short, extensions = 'Buttons', options = list(dom = 'Bfrtip',buttons = c('copy', 'csv', 'excel', 'pdf', 'print')))
+```
+
+### Regression Prep
+
+The following section is meant for the analyst to display details of the
+regression to check for fit.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+#regression for data from the 1980s
+temp0<-temp80 %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         COLOR=`TRUE COLOR_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,
+         SECCHI=`DEPTH, SECCHI DISK DEPTH_SD_NA`)  
+
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+#convert lake id to row number
+lakes<-temp0 %>% 
+  select(LAKE_ID) %>% 
+  arrange(LAKE_ID) %>% 
+  distinct() 
+lakes<-lakes %>% 
+  mutate(lake=row.names(lakes),
+         lake=as.numeric(lake))
+print(lakes$LAKE_ID)
+temp0<-merge(temp0,lakes,by=c('LAKE_ID'),all.x = TRUE)
+
+temp0 <-temp0 %>% 
+  mutate(SAMPLE_DATE=format(SAMPLE_DATE, "%j")) %>% 
+  rename(yrdate=SAMPLE_DATE) %>%  
+  mutate(yrdate=as.numeric(yrdate)) 
+
+temp0<-merge(temp0,predictors_long,by=c('LAKE_ID','year'),all.x=TRUE)
+
+temp0<-temp0 %>% 
+  select(LAKE_ID,CHLA,everything()) %>% 
+  rename(parameter=CHLA)
+temp0<-na.omit(temp0)
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','temp0','reg_slopes','reg_all80','temp80','temp10','tempall','slopes')))
+```
+
+```{r, child = 'sections/Regression.Rmd',eval=FALSE}
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+reg_all80<-junk
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+#regression for 2010
+temp0<-temp10 %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         COLOR=`TRUE COLOR_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,
+         SECCHI=`DEPTH, SECCHI DISK DEPTH_SD_NA`)  
+
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+#convert lake id to row number
+lakes<-temp0 %>% 
+  select(LAKE_ID) %>% 
+  arrange(LAKE_ID) %>% 
+  distinct() 
+lakes<-lakes %>% 
+  mutate(lake=row.names(lakes),
+         lake=as.numeric(lake))
+print(lakes$LAKE_ID)
+temp0<-merge(temp0,lakes,by=c('LAKE_ID'),all.x = TRUE)
+
+temp0 <-temp0 %>% 
+  mutate(SAMPLE_DATE=format(SAMPLE_DATE, "%j")) %>% 
+  rename(yrdate=SAMPLE_DATE) %>%  
+  mutate(yrdate=as.numeric(yrdate)) 
+temp0<-merge(temp0,predictors_long,by=c('LAKE_ID','year'),all.x=TRUE)
+
+temp0<-temp0 %>% 
+  select(LAKE_ID,CHLA,everything()) %>% 
+  rename(parameter=CHLA)
+temp0<-na.omit(temp0)
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','temp0','reg_all80','temp80','temp10','tempall','slopes')))
+```
+
+```{r, child = 'sections/Regression.Rmd',eval=FALSE}
+
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+reg_all10<-junk
+
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','reg_all80','reg_all10','temp80','temp10','tempall','slopes')))
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+#regression for all data
+temp0<-tempall %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         COLOR=`TRUE COLOR_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,
+         SECCHI=`DEPTH, SECCHI DISK DEPTH_SD_NA`)  
+
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+#convert lake id to row number
+lakes<-temp0 %>% 
+  select(LAKE_ID) %>% 
+  arrange(LAKE_ID) %>% 
+  distinct() 
+lakes<-lakes %>% 
+  mutate(lake=row.names(lakes),
+         lake=as.numeric(lake))
+print(lakes$LAKE_ID)
+temp0<-merge(temp0,lakes,by=c('LAKE_ID'),all.x = TRUE)
+
+temp0 <-temp0 %>% 
+  mutate(SAMPLE_DATE=format(SAMPLE_DATE, "%j")) %>% 
+  rename(yrdate=SAMPLE_DATE) %>%  
+  mutate(yrdate=as.numeric(yrdate)) 
+
+temp0<-merge(temp0,predictors_long,by=c('LAKE_ID','year'),all.x=TRUE)
+
+temp0<-temp0 %>% 
+  select(LAKE_ID,CHLA,everything()) %>% 
+  rename(parameter=CHLA)
+temp0<-na.omit(temp0)
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','temp0','reg_slopes','reg_all80','temp80','temp10','tempall','reg_all10','slopes')))
+```
+
+```{r, child = 'sections/Regression.Rmd',eval=FALSE}
+```
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+reg_all_all<-junk
+```
+
+## Comparison of Regressions
+
+We used a lasso regression to assess which predictors were significant
+at predicting chlorophyll levels in 1980 and 2010. They are ranked by
+their relative importance. The plots are placed side by side to see the
+relative change in the influence of these predictors from the 1980s to
+2010s.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE,eval=FALSE}
+library(gridExtra)
+library(ggplot2)
+
+reg_all80$decade<-"1985-95"
+reg_all10$decade<-"2010s"
+reg_all_all$decade<-"all"
+reg_all<-merge(reg_all10,reg_all80,all=TRUE)
+reg_all<-merge(reg_all,reg_all_all,all=TRUE)
+
+ print(ggplot(reg_all,aes(Importance,y=Variable,fill=Sign))+
+    geom_col() +
+    labs(title="Regression results for data from the 1980-95 and 2010s")+
+      facet_wrap(~decade))
+
+ rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','reg_all80','reg_all10','temp80','temp10','tempall','slopes')))
+```
+
+## Plotting ChlA and Predictors raw data
+
+Below we have plotted both the raw and log transformed relationships
+between chlorophyll a and the major predictors.
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+temp80r<-temp80 %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T)  %>% 
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+#remove because only one year of data
+remove<-temp80r %>% group_by(LAKE_ID) %>% summarize(n=n()) %>% ungroup() %>% arrange(n) %>% filter(n>1) %>% select(LAKE_ID) %>% distinct()
+temp80r<-merge(temp80r,remove)
+
+temp10r<-temp10 %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,)  %>%
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+#remove because only one year of data
+remove<-temp10r %>% group_by(LAKE_ID) %>% summarize(n=n()) %>% ungroup() %>% arrange(n) %>% filter(n>1) %>% select(LAKE_ID) %>% distinct()
+temp10r<-merge(temp10r,remove)
+
+
+temp0<-merge(temp80r,temp10r,all=TRUE)
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+#remove data that don't have enough values to perform smote
+temp0<-temp0 %>% 
+  filter(!LAKE_ID %in% c('1310NAS0034__2010','1310NAS0034__1980'))
+
+#now upsample using step_smote so that there's an equal number in each decade
+library(themis)
+temp_rec<-recipe(CHLA ~., data=temp0) %>% 
+  step_downsample(LAKE_ID) 
+temp_0<-temp_rec %>% prep() %>% bake(new_data=NULL)
+temp_0<-temp_0 %>% 
+  mutate(decade=as.numeric(gsub(".*__","",LAKE_ID)),
+         LAKE_ID=gsub("__.*","",LAKE_ID)) 
+
+
+ cat(' \n\n ')
+  print("The influence of Phosphorus on chlorophyll by decade. Raw data plotted between decades")
+  cat(' \n\n ')
+  print(ggplot()+
+          geom_point(data=temp_0,aes(x=PHOS,y=CHLA,color=decade))+
+          xlab("Phosphorus")+
+               theme(legend.title = element_blank()))
+ cat(' \n\n ')
+  print("The influence of Phosphorus on chlorophyll by decade. Log transformed data plotted between decades")
+  cat(' \n\n ')
+temp_0<-temp_0 %>% 
+ mutate(log_phos = log10(PHOS),
+         log_chla = log10(CHLA)) 
+
+temp_080<-temp_0 %>% filter(decade=="1980")
+temp_010<-temp_0 %>% filter(decade=="2010")
+print(ggplot(temp_0, aes(log_phos, log_chla,color=decade)) +
+  geom_point()+
+  geom_smooth(data = temp_080,aes(x=log_phos,y=log_chla),color="black")+
+  geom_smooth(data = temp_010,aes(x=log_phos,y=log_chla),color="deepskyblue2"))
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','reg_all80','reg_all10','temp80','temp10','slopes')))
+```
+
+and here are the results for only the lakes with N:P ratios
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+nplakes<-temp10 %>% 
+  filter(combined=="NPratio",Result.Value<4) %>% mutate(n=1) %>% select(LAKE_ID,n) %>% distinct()
+temp80r<-merge(nplakes,temp80,by=c('LAKE_ID'),all.x = TRUE)
+temp10r<-merge(nplakes,temp10,by=c('LAKE_ID'),all.x = TRUE)
+
+temp80r<-temp80r %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T)  %>% 
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+
+temp10r<-temp10r %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,)  %>%
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+
+
+temp0<-merge(temp80r,temp10r,all=TRUE)
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+
+#now upsample using step_smote so that there's an equal number in each decade
+library(themis)
+temp_rec<-recipe(CHLA ~., data=temp0) %>% 
+  step_downsample(LAKE_ID) 
+temp_0<-temp_rec %>% prep() %>% bake(new_data=NULL)
+temp_0<-temp_0 %>% 
+  mutate(decade=as.numeric(gsub(".*__","",LAKE_ID)),
+         LAKE_ID=gsub("__.*","",LAKE_ID)) 
+
+
+temp_0<-temp_0 %>% 
+ mutate(log_phos = log10(PHOS),
+         log_chla = log10(CHLA)) 
+
+temp_080<-temp_0 %>% filter(decade=="1980")
+temp_010<-temp_0 %>% filter(decade=="2010")
+print(ggplot(temp_0, aes(log_phos, log_chla,color=decade)) +
+  geom_point()+
+  geom_smooth(data = temp_080,aes(x=log_phos,y=log_chla),color="black")+
+  geom_smooth(data = temp_010,aes(x=log_phos,y=log_chla),color="deepskyblue2"))
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','reg_all80','reg_all10','temp80','temp10','slopes')))
+```
+
+and here are the results for only the lakes with zebra mussel invasions
+
+```{r, echo=FALSE, results='asis', message=FALSE, warning=FALSE}
+#removed 0402CON0067 because their invasion begain in 1991
+zeblakes<-predictors_long %>% filter(zebra_mussels==1,LAKE_ID!="0402CON0067") %>% mutate(n=1) %>% select(LAKE_ID,n) %>% distinct()
+temp80r<-merge(zeblakes,temp80,by=c('LAKE_ID'),all.x = TRUE)
+temp10r<-merge(zeblakes,temp10,by=c('LAKE_ID'),all.x = TRUE)
+
+temp80r<-temp80r %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T)  %>% 
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+
+temp10r<-temp10r %>% 
+  spread(combined,Result.Value,fill=NA) %>% 
+  rename(CHLA=`CHLOROPHYLL A_OW_T`,
+         PHOS=PHOSPHORUS_OW_T,)  %>%
+  mutate(LAKE_ID=paste(LAKE_ID,decade,sep="__")) %>% 
+  select(LAKE_ID,CHLA,PHOS)
+
+
+temp0<-merge(temp80r,temp10r,all=TRUE)
+#remove rows with NA
+temp0<-na.omit(temp0)
+
+
+#now upsample using step_smote so that there's an equal number in each decade
+library(themis)
+temp_rec<-recipe(CHLA ~., data=temp0) %>% 
+  step_downsample(LAKE_ID) 
+temp_0<-temp_rec %>% prep() %>% bake(new_data=NULL)
+temp_0<-temp_0 %>% 
+  mutate(decade=as.numeric(gsub(".*__","",LAKE_ID)),
+         LAKE_ID=gsub("__.*","",LAKE_ID)) 
+
+
+temp_0<-temp_0 %>% 
+ mutate(log_phos = log10(PHOS),
+         log_chla = log10(CHLA)) 
+
+temp_080<-temp_0 %>% filter(decade=="1980")
+temp_010<-temp_0 %>% filter(decade=="2010")
+print(ggplot(temp_0, aes(log_phos, log_chla,color=decade)) +
+  geom_point()+
+  geom_smooth(data = temp_080,aes(x=log_phos,y=log_chla),color="black")+
+  geom_smooth(data = temp_010,aes(x=log_phos,y=log_chla),color="deepskyblue2"))
+rm(list=setdiff(ls(), c("data",'yearly',"temp",'predictors_short','predictors_long','reg_all80','reg_all10','temp80','temp10','slopes')))
+```
